@@ -1,0 +1,5 @@
+tensorrt (10.3.0.30-1+cuda12.5) trusty; urgency=medium
+
+  * Automatic Debian package from build
+
+ -- cudatools <cudatools@nvidia.com>  Sat, 14 Sep 2024 19:37:08 +0000

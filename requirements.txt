@@ -1,0 +1,35 @@
+# SAM3_AGXOrin 依赖清单（Jetson AGX Orin / aarch64 / Python 3.10）
+#
+# 注意：torch / torchvision 必须使用 NVIDIA 为 Jetson 提供的定制 wheel，
+# 不要用 pip install torch（PyPI 上没有 aarch64+CUDA 的 wheel）。
+# setup.sh 会自动处理；此处仅列出以供参考。
+#
+# torch             见 setup.sh 中的 NVIDIA 源（本机为 2.8.0）
+# torchvision       见 setup.sh 中的 NVIDIA 源（本机为 0.23.0）
+
+# ---- sam3 本体的依赖（sam3 用 --no-deps 安装，这些需手动装）----
+numpy<2
+timm>=1.0.17
+ftfy>=6.1.1
+regex
+iopath>=0.1.10,<0.2.0
+huggingface-hub>=0.30.0,<2.0
+einops>=0.8.0,<0.9.0
+psutil
+
+# ---- 训练/配置相关（sam3 的 train 模块在 import 链上会用到）----
+hydra-core
+omegaconf
+
+# ---- 图像处理 / 评估 ----
+opencv-python-headless
+pillow
+pycocotools
+tqdm
+
+# ---- sam3 包本体（用 --no-deps 安装，避免 pip 改动 torch）----
+# sam3==0.1.4
+
+# ---- 可选：TensorRT 加速（JetPack 自带，见 README 的「进阶」章节）----
+# tensorrt
+# pycuda
