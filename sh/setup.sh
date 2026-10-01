@@ -174,6 +174,44 @@ print(f"      numpy {numpy.__version__} | onnx {onnx.__version__} | onnxruntime 
 ONNXCHK
 echo "      已安装（日志：logs/onnx.log）"
 
+# ---------- 3c. TensorRT Python 绑定 ----------
+# PyPI 上没有匹配 JetPack 的 tensorrt wheel，官方只提供 python3-libnvinfer*.deb。
+# 这里把仓库自带 trt_py/*.deb 里的 tensorrt / tensorrt_lean / tensorrt_dispatch
+# 解包后装进 venv（纯 Python 包装 + .so，系统 libnvinfer 运行库由 JetPack 提供）。
+# 不装这一步，run_trt.sh 会报 ModuleNotFoundError: No module named 'tensorrt'
+if "$PY" -c "import tensorrt" >/dev/null 2>&1; then
+  echo "[3/7] TensorRT Python 绑定已就绪: $("$PY" -c 'import tensorrt as t; print(t.__version__)' 2>/dev/null)"
+else
+  echo "[3/7] 安装 TensorRT Python 绑定（来自 trt_py/*.deb）..."
+  TRTPY="$ROOT/trt_py"
+  EXTRACT="$TRTPY/extract"
+  DSTPKG="$EXTRACT/usr/lib/python3.10/dist-packages"
+  : > "$LOG/tensorrt.log"
+  # 若仓库内没有预解压的 tensorrt 目录，则用 dpkg-deb 解包
+  if [ ! -d "$DSTPKG/tensorrt" ]; then
+    mkdir -p "$EXTRACT"
+    for d in "$TRTPY"/python3-libnvinfer*.deb; do
+      [ -f "$d" ] || continue
+      echo "      解包 $(basename "$d")" >> "$LOG/tensorrt.log"
+      dpkg-deb -x "$d" "$EXTRACT" >> "$LOG/tensorrt.log" 2>&1 \
+        || { echo "[错误] 解包失败：$d"; tail -20 "$LOG/tensorrt.log"; exit 1; }
+    done
+  fi
+  [ -d "$DSTPKG/tensorrt" ] || {
+    echo "[错误] 未找到 TensorRT 包内容（$DSTPKG/tensorrt）。"
+    echo "       请确认 trt_py/ 下有 python3-libnvinfer*.deb。"
+    exit 1
+  }
+  # 复制到 venv site-packages
+  cp -r "$DSTPKG"/tensorrt "$DSTPKG"/tensorrt_lean "$DSTPKG"/tensorrt_dispatch \
+        "$DSTPKG"/*.dist-info "$SP/" >> "$LOG/tensorrt.log" 2>&1 \
+    || { echo "[错误] 复制 tensorrt 到 venv 失败"; tail -20 "$LOG/tensorrt.log"; exit 1; }
+  # 校验
+  "$PY" -c "import tensorrt as t; print('      tensorrt', t.__version__)" \
+    || { echo "[错误] tensorrt 导入失败"; tail -20 "$LOG/tensorrt.log"; exit 1; }
+  echo "      已安装（日志：logs/tensorrt.log）"
+fi
+
 # ---------- 4. sam3 本体 ----------
 echo "[4/7] 安装 sam3 本体（--no-deps，防止 pip 改动 torch）..."
 "$PY" -m pip install --no-cache-dir --no-deps "sam3==0.1.4" 2>&1 | tail -3
