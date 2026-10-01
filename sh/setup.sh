@@ -41,7 +41,7 @@ TORCH_VER="2.8.0"
 TV_VER="0.23.0"
 
 mkdir -p "$LOG" "$ROOT/models" "$ROOT/assets" \
-         "$ROOT/inputimage" "$ROOT/outputimage" "$ROOT/outputs"
+         "$ROOT/inputimage" "$ROOT/outputimage"
 
 echo "=============================================="
 echo " SAM3_AGXOrin 环境初始化"
