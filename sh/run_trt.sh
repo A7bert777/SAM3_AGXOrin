@@ -21,15 +21,21 @@ if [[ ! -x "$VENV/bin/python" ]]; then
   exit 1
 fi
 
-VB="$ROOT/models/sam3_vision_encoder.engine"
-TB="$ROOT/models/sam3_text_encoder.engine"
+# 精度选择：SAM3_PREC=tf32|fp32|fp16|bf16（默认 tf32）
+PREC="${SAM3_PREC:-tf32}"
+VB="$ROOT/models/sam3_vision_encoder.${PREC}.engine"
+TB="$ROOT/models/sam3_text_encoder.${PREC}.engine"
+# 兼容旧命名（无精度后缀，如早期构建的 sam3_vision_encoder.engine）
+[[ -f "$VB" ]] || VB="$ROOT/models/sam3_vision_encoder.engine"
+[[ -f "$TB" ]] || TB="$ROOT/models/sam3_text_encoder.engine"
 if [[ ! -f "$VB" || ! -f "$TB" ]]; then
-  echo "[错误] 未找到 engine 文件："
+  echo "[错误] 未找到 engine 文件（精度=$PREC）："
   [[ -f "$VB" ]] || echo "       缺失 $VB"
   [[ -f "$TB" ]] || echo "       缺失 $TB"
-  echo "       请先执行 ./build_engine_sam3.sh"
+  echo "       请先执行 ./sh/build_engine_sam3.sh <onnx> $PREC"
   exit 1
 fi
+export SAM3_PREC="$PREC"
 
 # TensorRT 运行库（Python 绑定从 deb 手动装入 venv，不需要额外路径）
 export LD_LIBRARY_PATH="/usr/lib/aarch64-linux-gnu:$SP/nvidia/cusparselt/lib:${LD_LIBRARY_PATH:-}"

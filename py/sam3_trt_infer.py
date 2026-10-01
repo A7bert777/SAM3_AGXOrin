@@ -239,15 +239,27 @@ def filter_by_points(state, image, points_px, labels):
     return out
 
 
+def _pick_engine(stem: str) -> Path | None:
+    """按 SAM3_PREC 精度选择 engine：<stem>.<prec>.engine，回退旧命名 <stem>.engine。"""
+    prec = os.environ.get("SAM3_PREC", "tf32")
+    cand = ROOT / "models" / f"{stem}.{prec}.engine"
+    if cand.is_file():
+        return cand
+    legacy = ROOT / "models" / f"{stem}.engine"
+    if legacy.is_file():
+        return legacy
+    return None
+
+
 class TRTEngines:
     def __init__(self):
         self.vision = None
         self.text = None
-        vp = ROOT / "models" / "sam3_vision_encoder.engine"
-        tp = ROOT / "models" / "sam3_text_encoder.engine"
-        if vp.is_file():
+        vp = _pick_engine("sam3_vision_encoder")
+        tp = _pick_engine("sam3_text_encoder")
+        if vp is not None:
             self.vision = TRTEngine(vp)
-        if tp.is_file():
+        if tp is not None:
             self.text = TRTEngine(tp)
 
 
