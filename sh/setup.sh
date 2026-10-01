@@ -155,6 +155,25 @@ echo "[3/7] 安装 SAM3 运行依赖 ..."
   > "$LOG/deps.log" 2>&1 || { tail -20 "$LOG/deps.log"; exit 1; }
 echo "      依赖安装完成（日志：logs/deps.log）"
 
+# ---------- 3b. ONNX 导出 / 校验依赖 ----------
+# onnx 用于把 sam3.pt 导出为 ONNX；onnxruntime 用于导出后的数值校验。
+# ⚠️ onnx 依赖 ml_dtypes，而新版 ml_dtypes 会把 numpy 强升到 2.x；
+#    Jetson 版 torch 2.8 是按 numpy 1.x 编译的，numpy>=2 会导致 import torch 失败。
+#    因此这里安装 onnx 后，显式把 numpy 拉回 <2，并把 ml_dtypes 固定到兼容 numpy1.x 的 0.5.4。
+echo "[3/7] 安装 ONNX 导出/校验依赖（onnx / onnxruntime）..."
+"$PY" -m pip install --no-cache-dir "onnx" "onnxruntime" \
+  > "$LOG/onnx.log" 2>&1 || { tail -20 "$LOG/onnx.log"; exit 1; }
+# 回退 numpy 到 <2，并固定 ml_dtypes（--no-deps 防止 pip 又把 numpy 升上去）
+"$PY" -m pip install --no-cache-dir "numpy<2" >> "$LOG/onnx.log" 2>&1 || true
+"$PY" -m pip install --no-cache-dir --no-deps "ml_dtypes==0.5.4" >> "$LOG/onnx.log" 2>&1 || true
+# 校验：numpy<2 且 onnx 可用
+"$PY" - <<'ONNXCHK' || { echo "[错误] onnx/numpy 环境异常，日志尾部："; tail -20 "$LOG/onnx.log"; exit 1; }
+import numpy, onnx
+assert numpy.__version__.split(".")[0] == "1", f"numpy 必须为 1.x，当前 {numpy.__version__}"
+print(f"      numpy {numpy.__version__} | onnx {onnx.__version__} | onnxruntime 就绪")
+ONNXCHK
+echo "      已安装（日志：logs/onnx.log）"
+
 # ---------- 4. sam3 本体 ----------
 echo "[4/7] 安装 sam3 本体（--no-deps，防止 pip 改动 torch）..."
 "$PY" -m pip install --no-cache-dir --no-deps "sam3==0.1.4" 2>&1 | tail -3

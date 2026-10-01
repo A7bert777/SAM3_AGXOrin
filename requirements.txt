@@ -30,6 +30,12 @@ tqdm
 # ---- sam3 包本体（用 --no-deps 安装，避免 pip 改动 torch）----
 # sam3==0.1.4
 
+# ---- ONNX 导出 / 精度校验（导出 onnx、构建 TensorRT engine 需要）----
+# ⚠️ onnx 会经 ml_dtypes 把 numpy 升级到 2.x，与 Jetson 版 torch（按 numpy 1.x 编译）冲突。
+#    setup.sh 会在安装 onnx 后自动把 numpy 回退到 < 2 并把 ml_dtypes 固定到 0.5.4，无需手动处理。
+onnx
+onnxruntime
+
 # ---- 可选：TensorRT 加速（JetPack 自带，见 README 的「进阶」章节）----
 # tensorrt
 # pycuda
