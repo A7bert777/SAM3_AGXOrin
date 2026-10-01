@@ -11,8 +11,8 @@
 #   bf16   bfloat16 混合（--bf16）
 #
 # 例:
-#   bash build_engine_sam3.sh models/sam3_vision_encoder.onnx tf32
-#   bash build_engine_sam3.sh models/sam3_text_encoder.onnx   fp16
+#   bash sh/build_engine_sam3.sh models/sam3_vision_encoder.onnx tf32
+#   bash sh/build_engine_sam3.sh models/sam3_text_encoder.onnx   fp16
 #
 # 说明:
 #   - TensorRT 10.3 **没有 --tf32 选项**，TF32 是默认行为；--noTF32 才回到纯 FP32。

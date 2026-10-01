@@ -47,11 +47,23 @@
 从零初始化（新机器）：
 
 ```bash
-cd /home/jetson/zhangtianqi/SAM3_AGXOrin
-./sh/setup.sh       # 建 venv + 装依赖 + 打补丁 + 下载权重 + 自检
+cd /home/jetson/zhangtianqi/github/SAM3_AGXOrin
+./sh/setup.sh       # 一键初始化（见下方步骤说明）
 ./sh/download.sh    # 仅重新下载权重/词表（断点续传）
 ./sh/check_env.sh   # 检查 ONNX / TensorRT / onnxruntime 可用性
 ```
+
+`sh/setup.sh` 依次完成：
+
+1. 创建 `venv310`（Python 3.10；已存在且版本正确则复用）；
+2. 安装 NVIDIA 定制 PyTorch（Jetson aarch64 wheel，含 CUDA 可用性校验）；
+3. 安装 SAM3 运行依赖；
+4. **安装 ONNX 导出/校验依赖**（`onnx` / `onnxruntime`），并自动把 `numpy` 回退到 `<2`、
+   `ml_dtypes` 固定到 `0.5.4`（否则 Jetson 版 torch 无法 `import`）；
+5. **安装 TensorRT Python 绑定**（从 `trt_py/*.deb` 解包装入 venv，否则 `run_trt.sh`
+   会报 `ModuleNotFoundError: No module named 'tensorrt'`）；
+6. 安装 `sam3` 本体（`--no-deps`，避免 pip 改动 torch）；
+7. 打「无 Triton」补丁并自检 `import sam3`。
 
 环境自检：
 
@@ -63,7 +75,7 @@ cd /home/jetson/zhangtianqi/SAM3_AGXOrin
 
 ## 2. 快速开始
 
-> 所有命令都在项目根目录执行：`cd /home/jetson/zhangtianqi/SAM3_AGXOrin`
+> 所有命令都在项目根目录执行：`cd /home/jetson/zhangtianqi/github/SAM3_AGXOrin`
 
 ```bash
 # 文本提示分割（核心功能）
@@ -228,19 +240,21 @@ SAM3 的 grounding 头会一次性输出画面中所有候选物体（点只是�
 
 ## 5. TensorRT 加速
 
-将视觉编码器与文本编码器分别导出 ONNX 并构建 TensorRT engine，可绕过部分
-PyTorch 运行时开销。
+将视觉编码器与文本编码器分别导出 ONNX 并构建 TensorRT engine。**支持按精度构建**，
+engine 文件名带精度后缀，推理时用环境变量 `SAM3_PREC` 选择。
 
 ```bash
-# 1) 导出 ONNX（生成 models/*.onnx）
+# 1) 导出 ONNX（生成 models/*.onnx，FP32）
 ./venv310/bin/python py/export_onnx_sam3.py
 
-# 2) 构建 FP32 engine（生成 models/*.engine）
-./sh/build_engine_sam3.sh models/sam3_vision_encoder.onnx
-./sh/build_engine_sam3.sh models/sam3_text_encoder.onnx
+# 2) 构建 engine —— 用法：build_engine_sam3.sh <onnx> [precision] [workspace_MB]
+#    precision 可选 tf32(默认) / fp32 / fp16 / bf16
+./sh/build_engine_sam3.sh models/sam3_vision_encoder.onnx tf32
+./sh/build_engine_sam3.sh models/sam3_text_encoder.onnx   tf32
+#   -> 生成 models/sam3_vision_encoder.tf32.engine 等（文件名带精度）
 
-# 3) 用 engine 推理（参数与 run.sh 完全一致）
-./sh/run_trt.sh --image inputimage/6.jpg --text "shoe" --out outputimage/6_trt.png
+# 3) 用 engine 推理，用 SAM3_PREC 选择精度（默认 tf32）
+SAM3_PREC=tf32 ./sh/run_trt.sh --image inputimage/6.jpg --text "shoe" --out outputimage/6_trt.png
 
 # 4) 精度/一致性校验
 ./venv310/bin/python py/verify_onnx_cpu.py     # ONNX 与 PyTorch 对齐
@@ -251,19 +265,41 @@ PyTorch 运行时开销。
                 --vision-backend pytorch --text-backend engine --out out.png
 ```
 
-**实测结论：在 AGX Orin 上 TRT 对本模型没有明显加速。**
+### 5.1 精度选择
+
+| precision | trtexec flag | 说明 |
+|-----------|-------------|------|
+| `tf32`（默认） | 无（TRT 默认行为） | Tensor Core TF32，与 PyTorch 默认一致，精度几乎无损【推荐】 |
+| `fp32` | `--noTF32` | 纯 IEEE FP32，最精确，但不用 Tensor Core |
+| `fp16` | `--fp16` | 混合精度，更快、体积约减半，但**可能明显掉精度**（见下） |
+| `bf16` | `--bf16` | bfloat16 混合精度 |
+
+> TensorRT 10.3 **没有 `--tf32` 选项**，TF32 是默认行为；`--noTF32` 才回到纯 FP32。
+> engine 文件名格式为 `models/<name>.<precision>.engine`，多种精度可共存对比；
+> 推理脚本按 `SAM3_PREC` 选择，找不到时回退无后缀的旧命名。
+
+### 5.2 实测结论
+
+**性能**：在 AGX Orin 上 TRT 对本模型（瓶颈在 ViT-H 视觉编码与融合 Transformer 的
+**访存**，而非 Tensor Core）热身后没有明显加速：
 
 | 后端 | 首次推理 | 热身后推理 | 结果一致性 |
 |------|---------|-----------|-----------|
 | PyTorch | 1463 ms | 1065 ms | — |
-| TensorRT | 2523 ms | 1062 ms | ✅ 完全一致（同 score/box） |
+| TensorRT (tf32) | 2523 ms | 1062 ms | ✅ 完全一致（同 score/box） |
 
-原因：模型瓶颈在 ViT-H 视觉编码与融合 Transformer 的**访存**，而 Orin 的
-Tensor Core 对该形状矩阵乘的收益有限；此外 TRT 首次运行有引擎加载与
-CUDA 图初始化开销。**日常使用建议直接用 PyTorch 路径（`run.sh`）**。
+**精度**：FP16 对 SAM3 的视觉编码器（ViT-H）**敏感，实测会失效**。同一「shoe」提示、同一张图：
 
-> TRT engine 与 ONNX 各约 3.1 GB，若磁盘紧张可删除 `models/*.onnx`，
-> 保留 `*.engine` 即可运行 `run_trt.sh`。
+| 精度 | 图像编码 | 检测目标数 |
+|------|---------|-----------|
+| tf32 / fp32 | 813 ms | 2（score 0.938 / 0.937） |
+| **fp16** | 297 ms | **0（检测不到）** |
+
+FP16 虽快（图像编码快约 2.7×），但特征分布偏移导致下游检测失效，**视觉编码器不建议用 FP16**；
+文本编码器 FP16 影响较小。
+
+> **建议**：日常用 PyTorch 路径（`run.sh`）或 TF32 engine。TRT engine 与 ONNX 各约
+> 1.4~1.7 GB，磁盘紧张可删除 `models/*.onnx`，保留 `*.engine` 即可运行 `run_trt.sh`。
 
 ---
 
@@ -327,49 +363,66 @@ CUDA 图初始化开销。**日常使用建议直接用 PyTorch 路径（`run.sh
 
 ```
 SAM3_AGXOrin/
-├── README.md
-├── requirements.txt
+├── README.md                     # 本文档
+├── requirements.txt              # Python 依赖清单
+├── .gitignore                    # 忽略 venv / models / engine / logs 等大文件
 │
 ├── sh/                           # Shell 入口（只负责环境变量 + 调度）
-│   ├── run.sh                    # ⭐ 主入口（自动选择服务或本地）
-│   ├── serve.sh                  # ⭐ 常驻服务管理（start/stop/status/log/fore）
-│   ├── run_trt.sh                # TensorRT 推理入口
-│   ├── setup.sh                  # 一键环境初始化
-│   ├── download.sh               # 下载权重与 BPE 词表（断点续传）
-│   ├── build_engine_sam3.sh      # ONNX -> TensorRT engine（FP32）
-│   └── check_env.sh              # ONNX/TensorRT 环境检查
+│   ├── run.sh                    # ⭐ 主入口：设环境后调用 sam3_client（自动选服务/本地）
+│   ├── serve.sh                  # ⭐ 常驻服务管理：start/stop/restart/status/log/fore
+│   ├── run_trt.sh                # ⭐ TensorRT 推理入口（同 run.sh，按 SAM3_PREC 选精度）
+│   ├── setup.sh                  # 一键初始化：venv/torch/依赖/onnx/TRT绑定/补丁/权重/自检
+│   ├── download.sh               # 下载权重 sam3.pt 与 BPE 词表（断点续传）
+│   ├── build_engine_sam3.sh      # ONNX -> TensorRT engine（支持 tf32/fp32/fp16/bf16）
+│   └── check_env.sh              # 打印 ONNX / TensorRT / onnxruntime 环境信息
 │
 ├── py/                           # Python 实现
-│   ├── sam3_infer.py             # 推理核心（三提示 + 后处理 + 可视化 + 基准）
-│   ├── sam3_client.py            # 客户端：服务优先，自动回退本地
-│   ├── sam3_server.py            # 常驻服务（Unix socket + JSON 协议）
-│   ├── sam3_trt_infer.py         # TensorRT 版推理（参数同 sam3_infer.py）
-│   ├── trt_runner.py             # TRT engine 加载与执行封装
-│   ├── infer_batch.py            # 批量文本提示推理
-│   ├── export_onnx_sam3.py       # 导出视觉/文本编码器 ONNX
-│   ├── verify_onnx_cpu.py        # ONNX 与 PyTorch 精度对齐校验
-│   ├── verify_trt_prec.py        # TRT 与 PyTorch 精度对齐校验
-│   ├── patch_sam3_triton.py      # 「无 Triton」兼容补丁（Jetson 必需）
-│   ├── patch_sam3_rope.py        # RoPE 相关补丁（TRT 路径用）
-│   ├── selfcheck.py              # 环境自检
-│   ├── probe_sam3.py             # 模型结构探测
-│   └── probe_shapes.py           # 张量形状探测
+│   │  ── 推理 ──
+│   ├── sam3_infer.py             # 推理核心：文本/框/点三提示 + 后处理 + 可视化 + 基准
+│   ├── sam3_client.py            # 客户端：优先转发常驻服务，失败自动回退本地
+│   ├── sam3_server.py            # 常驻服务：Unix socket + JSON 协议，模型常驻内存
+│   ├── sam3_trt_infer.py         # TensorRT 版推理（monkey-patch backbone，参数同 sam3_infer）
+│   ├── trt_runner.py             # TRT engine 加载/执行封装（execute_async_v3，免 pycuda）
+│   ├── infer_batch.py            # 批量文本提示推理（模型只加载一次）
+│   │  ── ONNX / TensorRT 工具 ──
+│   ├── export_onnx_sam3.py       # 导出视觉/文本编码器为 ONNX（FP32）
+│   ├── verify_onnx_cpu.py        # ONNX 与 PyTorch（同设备 CPU）精度对齐
+│   ├── verify_trt_prec.py        # TRT 与 PyTorch 精度对齐（张量级 + 端到端 IoU）
+│   │  ── 环境修复 / 探针 ──
+│   ├── patch_sam3_triton.py      # 「无 Triton」兼容补丁（Jetson 必需，幂等）
+│   ├── patch_sam3_rope.py        # 复数 RoPE → 实数等价实现（ONNX 导出必需）
+│   ├── selfcheck.py              # 环境自检（模块 / CUDA / 权重 / 词表）
+│   ├── probe_sam3.py             # 结构探针：子模块参数量与分阶段耗时
+│   └── probe_shapes.py           # 形状探针：forward_image/text/grounding 的 IO 结构
 │
-├── models/                       # 权重与引擎（需下载/构建）
-│   ├── sam3.pt                       # 主权重 3.3 GB
-│   ├── sam3_vision_encoder.onnx      # 1.7 GB（可删）
-│   ├── sam3_vision_encoder.engine    # 1.7 GB
-│   ├── sam3_text_encoder.onnx        # 1.4 GB（可删）
-│   └── sam3_text_encoder.engine      # 1.4 GB
+├── assets/
+│   └── bpe_simple_vocab_16e6.txt.gz   # 文本 tokenizer 词表（文本编码器需要）
 │
-├── assets/bpe_simple_vocab_16e6.txt.gz    # 文本 tokenizer 词表
-├── inputimage/                   # 输入图像（1~8.jpg 为示例）
-├── outputimage/                  # 可视化输出
-├── outputs/                      # 掩码 / CSV
-├── run/                          # 服务运行时文件（socket / pid / log）
-├── trt_py/                       # TensorRT Python 绑定的 deb 包与解包目录
+├── inputimage/                   # 示例输入图像（1~6.jpg）
+├── outputimage/                  # 可视化输出（--out 默认写这里）
+│
+├── models/                       # 权重与引擎（需下载/构建，已被 .gitignore 忽略）
+│   ├── sam3.pt                          # 主权重 3.3 GB（download.sh）
+│   ├── sam3_vision_encoder.onnx         # 1.7 GB（export_onnx_sam3.py）
+│   ├── sam3_vision_encoder.tf32.engine  # 1.7 GB（build_engine_sam3.sh）
+│   ├── sam3_text_encoder.onnx           # 1.4 GB
+│   └── sam3_text_encoder.tf32.engine    # 1.4 GB
+│
+├── trt_py/                       # TensorRT Python 绑定（随仓库分发，供 setup.sh 安装）
+│   ├── python3-libnvinfer*.deb        # 官方 deb（tensorrt / lean / dispatch）
+│   └── extract/...                    # deb 解包后的 tensorrt 包（含 tensorrt.so）
+│
+├── logs/                         # 各类日志（setup/engine/推理，已被忽略）
+├── run/                          # 常驻服务运行时文件（sam3.sock / sam3.pid / sam3.log）
+├── outputs/                      # 掩码 / CSV 输出（按需由推理脚本自建，已被忽略）
 └── venv310/                      # Python 虚拟环境（含 NVIDIA 定制 torch）
 ```
+
+> `models/`、`venv310/`、`trt_py/extract/`、`logs/`、`outputimage/`、`outputs/`、`run/`
+> 均为**本地产物**，受 `.gitignore` 保护，不进仓库，由 `setup.sh` / `download.sh` /
+> `build_engine_sam3.sh` 或推理时按需生成。
+> `trt_py/*.deb` 则**随仓库分发**，用于在无网络的 Jetson 上安装 TensorRT Python 绑定。
+> 注意：`sh/setup.sh` **不再预建 `outputs/`**，只有实际用到 `--mask-dir` / `--csv` 时才自动创建。
 
 ---
 

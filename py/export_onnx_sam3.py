@@ -25,10 +25,10 @@
         —— 对应 backbone.forward_text([prompt]) 的 language_mask/features/embeds
 
 用法：
-    ./venv310/bin/python export_onnx_sam3.py                  # 两个都导出
-    ./venv310/bin/python export_onnx_sam3.py --part vision    # 只导视觉编码器
-    ./venv310/bin/python export_onnx_sam3.py --part text
-    ./venv310/bin/python export_onnx_sam3.py --no-verify      # 跳过数值校验
+    ./venv310/bin/python ./py/export_onnx_sam3.py                  # 两个都导出
+    ./venv310/bin/python ./py/export_onnx_sam3.py --part vision    # 只导视觉编码器
+    ./venv310/bin/python ./py/export_onnx_sam3.py --part text
+    ./venv310/bin/python ./py/export_onnx_sam3.py --no-verify      # 跳过数值校验
 
 导出后构建 engine（FP32）：
     bash build_engine_sam3.sh models/sam3_vision_encoder.onnx fp32
