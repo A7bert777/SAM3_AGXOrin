@@ -27,7 +27,12 @@ fetch() {  # fetch <目标文件> <最小字节> <候选URL...>
   fi
   for url in "$@"; do
     echo "[下载] $url"
-    if curl -L --fail --retry 5 --retry-delay 3 -C - -o "$out" "$url"; then
+    # -#      : 强制显示实时进度条（断点续传时同样有效）。
+    #           注意：curl 默认的进度表在「输出不是终端」时会被自动隐藏，
+    #           所以这里必须用 -#，才能在任何情况下都看到进度。
+    # --retry : 断线自动重试；-C - : 断点续传
+    if curl -# -L --fail --retry 5 --retry-delay 3 -C - -o "$out" "$url"; then
+      echo
       if (( $(stat -c%s "$out") >= min )); then
         echo "[完成] $out ($(du -h "$out" | cut -f1))"
         return 0

@@ -43,6 +43,19 @@ TV_VER="0.23.0"
 mkdir -p "$LOG" "$ROOT/models" "$ROOT/assets" \
          "$ROOT/inputimage" "$ROOT/outputimage"
 
+# py_step <日志文件> <命令...>
+#   用伪终端(script)运行耗时命令（pip 下载/安装等），让进度条实时刷新；
+#   同时把完整输出追加进日志文件。没有 script(1) 时退化为普通管道。
+#   script 的 -e 会把子命令退出码透传，配合 set -o pipefail，失败可被 if/|| 捕获。
+py_step() {  # py_step <logfile> <cmd> [args...]
+  local log="$1"; shift
+  if command -v script >/dev/null 2>&1; then
+    script -qefc "$(printf '%q ' "$@")" /dev/null | tee -a "$log"
+  else
+    "$@" 2>&1 | tee -a "$log"
+  fi
+}
+
 echo "=============================================="
 echo " SAM3_AGXOrin 环境初始化"
 echo " 项目根目录: $ROOT"
@@ -112,10 +125,10 @@ else
   echo "[2/7] 安装 NVIDIA 定制 PyTorch（Jetson aarch64, JetPack 6.x）..."
   # 第 1 步：torch/torchvision 只从 Jetson 源取，--no-deps 避免它顺手把
   #         CPU 版依赖拉进来；版本号固定，确保拿到的是 CUDA 版。
-  if ! "$PY" -m pip install --no-cache-dir --no-deps \
+  if ! py_step "$LOG/torch.log" \
+        "$PY" -m pip install --no-cache-dir --no-deps --progress-bar on \
         --index-url "$TORCH_INDEX" \
-        "torch==$TORCH_VER" "torchvision==$TV_VER" \
-        >"$LOG/torch.log" 2>&1; then
+        "torch==$TORCH_VER" "torchvision==$TV_VER"; then
     echo "[错误] PyTorch 安装失败，日志尾部："
     tail -20 "$LOG/torch.log"
     echo
@@ -123,10 +136,10 @@ else
     exit 1
   fi
   # 第 2 步：torch/torchvision 的运行期依赖走 PyPI 正常安装
-  "$PY" -m pip install --no-cache-dir \
+  py_step "$LOG/torch.log" \
+        "$PY" -m pip install --no-cache-dir --progress-bar on \
         "filelock" "typing-extensions>=4.10.0" "sympy>=1.13.3" \
         "networkx" "jinja2" "fsspec" "pillow" \
-        >>"$LOG/torch.log" 2>&1 \
     || { echo "[错误] PyTorch 依赖安装失败，日志尾部："; tail -20 "$LOG/torch.log"; exit 1; }
   # 第 3 步：确认装到的确实是能在 Orin 上用 GPU 的版本
   "$PY" - <<'PYCHK' >"$LOG/torchchk.log" 2>&1 || {
@@ -147,12 +160,13 @@ fi
 
 # ---------- 3. 依赖 ----------
 echo "[3/7] 安装 SAM3 运行依赖 ..."
-"$PY" -m pip install --no-cache-dir \
+py_step "$LOG/deps.log" \
+  "$PY" -m pip install --no-cache-dir --progress-bar on \
   "numpy<2" "timm>=1.0.17" "ftfy>=6.1.1" "regex" \
   "iopath>=0.1.10,<0.2.0" "huggingface-hub>=0.30.0,<2.0" "einops>=0.8.0,<0.9.0" \
   "psutil" "hydra-core" "omegaconf" \
   "opencv-python-headless" "pillow" "pycocotools" "tqdm" \
-  > "$LOG/deps.log" 2>&1 || { tail -20 "$LOG/deps.log"; exit 1; }
+  || { tail -20 "$LOG/deps.log"; exit 1; }
 echo "      依赖安装完成（日志：logs/deps.log）"
 
 # ---------- 3b. ONNX 导出 / 校验依赖 ----------
@@ -161,11 +175,12 @@ echo "      依赖安装完成（日志：logs/deps.log）"
 #    Jetson 版 torch 2.8 是按 numpy 1.x 编译的，numpy>=2 会导致 import torch 失败。
 #    因此这里安装 onnx 后，显式把 numpy 拉回 <2，并把 ml_dtypes 固定到兼容 numpy1.x 的 0.5.4。
 echo "[3/7] 安装 ONNX 导出/校验依赖（onnx / onnxruntime）..."
-"$PY" -m pip install --no-cache-dir "onnx" "onnxruntime" \
-  > "$LOG/onnx.log" 2>&1 || { tail -20 "$LOG/onnx.log"; exit 1; }
+py_step "$LOG/onnx.log" \
+  "$PY" -m pip install --no-cache-dir --progress-bar on "onnx" "onnxruntime" \
+  || { tail -20 "$LOG/onnx.log"; exit 1; }
 # 回退 numpy 到 <2，并固定 ml_dtypes（--no-deps 防止 pip 又把 numpy 升上去）
-"$PY" -m pip install --no-cache-dir "numpy<2" >> "$LOG/onnx.log" 2>&1 || true
-"$PY" -m pip install --no-cache-dir --no-deps "ml_dtypes==0.5.4" >> "$LOG/onnx.log" 2>&1 || true
+py_step "$LOG/onnx.log" "$PY" -m pip install --no-cache-dir "numpy<2" || true
+py_step "$LOG/onnx.log" "$PY" -m pip install --no-cache-dir --no-deps "ml_dtypes==0.5.4" || true
 # 校验：numpy<2 且 onnx 可用
 "$PY" - <<'ONNXCHK' || { echo "[错误] onnx/numpy 环境异常，日志尾部："; tail -20 "$LOG/onnx.log"; exit 1; }
 import numpy, onnx
@@ -214,7 +229,8 @@ fi
 
 # ---------- 4. sam3 本体 ----------
 echo "[4/7] 安装 sam3 本体（--no-deps，防止 pip 改动 torch）..."
-"$PY" -m pip install --no-cache-dir --no-deps "sam3==0.1.4" 2>&1 | tail -3
+py_step "$LOG/sam3.log" \
+  "$PY" -m pip install --no-cache-dir --no-deps --progress-bar on "sam3==0.1.4"
 
 # ---------- 5. triton 补丁 ----------
 echo "[5/7] 应用 SAM3「无 Triton」兼容补丁 ..."
